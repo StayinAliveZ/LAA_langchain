@@ -1,0 +1,9 @@
+streamlit
+langchain
+langchain-core
+langchain-community
+langchain-deepseek
+unstructured[pdf]
+faiss-cpu
+dashscope
+python-dotenv 
