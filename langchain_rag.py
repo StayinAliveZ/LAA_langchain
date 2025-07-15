@@ -3,6 +3,7 @@ from langchain_core.documents import Document
 from unstructured.partition.pdf import partition_pdf
 from unstructured.chunking.title import chunk_by_title
 import tempfile
+import ast # Import the Abstract Syntax Tree module
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.vectorstores import FAISS
 from langchain.tools.retriever import create_retriever_tool
@@ -10,7 +11,17 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain.chat_models import init_chat_model
 import os
-from dotenv import load_dotenv 
+import time
+from dotenv import load_dotenv
+
+# Import tools and functions from our new module
+from academic_search import (
+    extract_title_and_initial_text,
+    summarize_text_to_abstract,
+    generate_search_keywords,
+    search_semantic_scholar,
+)
+
 load_dotenv(override=True)
 
 # 设置Hugging Face镜像，解决模型下载问题
@@ -240,6 +251,79 @@ def user_input(user_question):
         st.error(f"❌ 加载数据库时出错: {str(e)}")
         st.info("请重新处理PDF文件")
 
+
+def run_related_papers_agent(pdf_file):
+    """
+    运行一个Agent来查找与给定PDF相关的文献。
+    """
+    with st.spinner("正在提取论文核心信息..."):
+        try:
+            details = extract_title_and_initial_text(pdf_file)
+            title = details.get("title")
+            initial_text = details.get("initial_text")
+
+            if title == "Unknown Title":
+                st.error("无法从此PDF中识别出标题，请尝试其他文件。")
+                return
+            st.info(f"以论文 **《{title}》** 为基础进行分析...")
+
+        except Exception as e:
+            st.error(f"解析PDF时出错: {e}")
+            return
+
+    with st.spinner("AI正在生成检索策略并查找相关文献..."):
+        try:
+            # 1. 定义可用的工具
+            tools = [summarize_text_to_abstract, generate_search_keywords, search_semantic_scholar]
+
+            # 2. 创建LLM
+            llm = init_chat_model("deepseek-chat", model_provider="deepseek")
+
+            # 3. 创建Agent的提示词 (包含新的三步工作流)
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """你是一个强大的科研助理。你的任务是根据提供的论文标题和初始文本，找到相关的学术文献。你必须严格遵循以下步骤：
+1.  **第一步：总结摘要**。使用`summarize-text-to-abstract`工具，为提供的`initial_text`生成一段简洁的摘要。
+2.  **第二步：提炼关键词**。使用`generate-search-keywords`工具，并为其提供原始的`title`和你刚刚在第一步生成的`abstract`。
+3.  **第三步：搜索文献**。使用`search-semantic-scholar`工具，并为其提供你在第二步生成的`keywords`。
+4.  **最后**，你必须将`search-semantic-scholar`工具返回的原始Python列表（list of dictionaries）作为你的最终答案。不要对它进行任何格式化、转换或添加任何解释性文字。必须直接返回原始的列表结构。"""),
+                ("human", "请为以下文档查找相关文献：\n\n标题: {title}\n\n初始文本: {initial_text}"),
+                ("placeholder", "{agent_scratchpad}"),
+            ])
+
+            # 4. 创建Agent
+            agent = create_tool_calling_agent(llm, tools, prompt)
+            agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+            # 5. 运行Agent
+            response = agent_executor.invoke({
+                "title": title,
+                "initial_text": initial_text
+            })
+            
+            # 6. 解析并显示结果 (关键修正)
+            output = response.get('output')
+            
+            if isinstance(output, str):
+                try:
+                    # AI可能返回一个列表的字符串表示，我们安全地将其解析为真实的列表
+                    st.session_state.related_papers = ast.literal_eval(output)
+                except (ValueError, SyntaxError):
+                    # 如果解析失败，说明它不是一个合法的列表字符串
+                    print(f"Agent返回了无法解析的字符串: {output}")
+                    st.session_state.related_papers = [] # 设为空列表以显示失败信息
+            elif isinstance(output, list):
+                # AI正确地返回了一个列表
+                st.session_state.related_papers = output
+            else:
+                # 任何其他意外类型
+                print(f"Agent返回了意外的类型: {type(output)}")
+                st.session_state.related_papers = []
+        
+        except Exception as e:
+            st.error(f"查找相关文献时出错: {e}")
+            st.session_state.related_papers = [] # 在发生异常时也确保清空
+
+
 def main():
     st.set_page_config("📚 学术文献分析助手", layout="wide")
     inject_custom_css()
@@ -262,6 +346,7 @@ def main():
                 if os.path.exists("faiss_db"):
                     shutil.rmtree("faiss_db")
                 st.success("知识库已清除！")
+                time.sleep(3) # 暂停3秒
                 st.rerun()
             except Exception as e:
                 st.error(f"清除失败: {e}")
@@ -278,6 +363,28 @@ def main():
         else:
             st.error("❌ 请先上传并处理PDF文件！")
 
+    # Display related papers if they exist in the session state
+    if "related_papers" in st.session_state and st.session_state.related_papers:
+        st.markdown("---")
+        st.subheader("🔍 相关文献推荐")
+        
+        with st.expander("点击查看推荐的5篇相关文献", expanded=True):
+            papers = st.session_state.related_papers
+            if isinstance(papers, list) and papers:
+                for i, paper in enumerate(papers):
+                    if "error" in paper:
+                        st.error(f"在检索过程中发生错误: {paper['error']}")
+                        continue
+
+                    st.markdown(f"**{i+1}. {paper.get('title', 'N/A')}**")
+                    st.markdown(f"_作者: {paper.get('authors', 'N/A')} ({paper.get('year', 'N/A')})_")
+                    st.markdown(f"**摘要**: {paper.get('abstract', '无可用摘要')}")
+                    st.markdown(f"[🔗 阅读原文]({paper.get('url', '#')})")
+                    if i < len(papers) - 1:
+                        st.markdown("---")
+            else:
+                st.write("未能找到相关的文献，或返回格式不正确。")
+
     # 侧边栏
     with st.sidebar:
         st.title("📚 文档库管理")
@@ -291,34 +398,39 @@ def main():
         st.markdown("---")
         
         # 文件上传
-        pdf_doc = st.file_uploader(
+        pdf_docs = st.file_uploader(
             "📎 上传PDF格式的学术文献", 
             accept_multiple_files=True,
             type=['pdf'],
             help="支持一次性上传多篇相关文献进行综合分析"
         )
         
-        if pdf_doc:
-            st.info(f"📄 已选择 {len(pdf_doc)} 篇文献")
-            for i, pdf in enumerate(pdf_doc, 1):
+        if pdf_docs:
+            st.info(f"📄 已选择 {len(pdf_docs)} 篇文献")
+            for i, pdf in enumerate(pdf_docs, 1):
                 st.write(f"   {i}. {pdf.name}")
         
+        st.markdown("---")
+
         # 处理按钮
         process_button = st.button(
             "🚀 构建知识库", 
-            disabled=not pdf_doc,
+            disabled=not pdf_docs,
             use_container_width=True
         )
-        
+
         if process_button:
-            if pdf_doc:
+            if "related_papers" in st.session_state:
+                del st.session_state.related_papers  # Clear previous recommendations
+            if pdf_docs:
                 with st.spinner("📊 正在处理文献，请稍候..."):
                     try:
                         # 新的处理流程
-                        chunk_count = process_pdfs(pdf_doc)
+                        chunk_count = process_pdfs(pdf_docs)
                         st.info(f"✅ 文献已成功处理，切分为 {chunk_count} 个知识片段。")
                         st.success("🎉 知识库构建完成！现在可以开始提问了。")
                         st.balloons()
+                        time.sleep(1.5) # 暂停1.5秒
                         st.rerun()
                         
                     except Exception as e:
@@ -326,6 +438,32 @@ def main():
             else:
                 st.warning("⚠️ 请先选择要上传的PDF文件")
         
+        # 新增：相关文献推荐功能
+        st.markdown("---")
+        st.subheader("🔗 相关文献推荐")
+
+        if pdf_docs:
+            pdf_options = {pdf.name: pdf for pdf in pdf_docs}
+            selected_pdf_name = st.selectbox(
+                "请选择一篇论文作为分析基础：",
+                options=list(pdf_options.keys())
+            )
+            
+            find_related_button = st.button(
+                "查找相关文献",
+                use_container_width=True
+            )
+
+            if find_related_button and selected_pdf_name:
+                selected_pdf_file = pdf_options[selected_pdf_name]
+                if "related_papers" in st.session_state:
+                     del st.session_state.related_papers # Clear previous results before new search
+                run_related_papers_agent(selected_pdf_file)
+                st.rerun()
+        else:
+            st.info("请先上传PDF文件以启用此功能。")
+
+
         # 使用说明
         with st.expander("💡 使用指南"):
             st.markdown("""

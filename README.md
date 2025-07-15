@@ -16,7 +16,7 @@ Follow these steps to set up and run the project locally.
 
 ### 1. Prerequisites
 
-- Python 3.8+
+- Python 3.11+
 - Git
 
 ### 2. Clone the Repository
@@ -77,8 +77,25 @@ Your web browser should automatically open to the application's URL (usually `ht
 
 ## 📖 How to Use
 
+The application has two main functions: **Document Q&A** and **Related Paper Recommendation**.
+
+### 1. Document Q&A
+
 1. **Upload Documents**: Use the sidebar to upload one or more PDF files.
 2. **Build Knowledge Base**: Click the "🚀 构建知识库" (Build Knowledge Base) button. The app will process the PDFs, chunk the content, and store it in a FAISS vector database.
 3. **Ask Questions**: Once the knowledge base is ready, type your questions about the documents in the main input box and press Enter.
 4. **Get Answers**: The AI assistant will analyze the documents and provide a detailed answer based on the context.
 5. **Clear Knowledge Base**: If you want to analyze new documents, you can clear the existing database using the "🗑️ 清除知识库" (Clear Knowledge Base) button.
+
+### 2. Related Paper Recommendation
+
+This feature helps you discover new research based on an uploaded paper.
+
+1. **Upload Documents**: Ensure at least one PDF is uploaded in the sidebar.
+2. **Select Base Paper**: In the sidebar, under "相关文献推荐" (Related Paper Recommendation), select one of the uploaded papers from the dropdown menu.
+3. **Find Papers**: Click the "查找相关文献" (Find Related Papers) button.
+4. **Review Results**: The AI agent will perform a multi-step process:
+   * It extracts the title and abstract from your selected paper.
+   * It generates relevant search keywords.
+   * It searches the Semantic Scholar database for related articles.
+5. The recommendations will be displayed in the main application window.
